@@ -1,9 +1,16 @@
 const Docker = require('dockerode');
+const FirecrackerExecutor = require('../virtualization/firecracker');
+const MetricsCollector = require('../metrics/MetricsCollector');
 const docker = new Docker();
+const firecracker = new FirecrackerExecutor();
+
+// Initialize Firecracker
+firecracker.init().catch(console.error);
 
 // Function to execute code in a Docker container
 async function executeInDocker(func, input) {
   const { language, code, timeout } = func;
+  const startTime = process.hrtime();
 
   // Create container configuration
   const containerConfig = {
@@ -24,6 +31,7 @@ async function executeInDocker(func, input) {
     executableCode = `
 import json
 import sys
+import resource
 
 def main():
     input_data = json.loads('''${JSON.stringify(input)}''')
@@ -31,7 +39,14 @@ def main():
 ${code}
 
     result = main(input_data)
-    print(json.dumps(result))
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    print(json.dumps({
+        'result': result,
+        'metrics': {
+            'memory': usage.ru_maxrss,
+            'cpu': usage.ru_utime + usage.ru_stime
+        }
+    }))
 `;
     containerConfig.Cmd = ['python', '-c', executableCode];
   } else {
@@ -41,7 +56,14 @@ const input = ${JSON.stringify(input)};
 ${code}
 
 const result = main(input);
-console.log(JSON.stringify(result));
+const usage = process.memoryUsage();
+console.log(JSON.stringify({
+    result,
+    metrics: {
+        memory: usage.heapUsed,
+        cpu: process.cpuUsage().user + process.cpuUsage().system
+    }
+}));
 `;
     containerConfig.Cmd = ['node', '-e', executableCode];
   }
@@ -78,11 +100,24 @@ console.log(JSON.stringify(result));
 
     // Wait for execution or timeout
     const output = await Promise.race([executionPromise, timeoutPromise]);
+    const executionTime = process.hrtime(startTime);
+    const executionTimeMs = (executionTime[0] * 1e9 + executionTime[1]) / 1e6;
 
     try {
-      return JSON.parse(output.toString().trim());
+      const { result, metrics } = JSON.parse(output.toString().trim());
+      return {
+        success: true,
+        result,
+        executionTime: executionTimeMs,
+        memoryUsage: metrics.memory,
+        cpuUsage: metrics.cpu,
+      };
     } catch (error) {
-      return { output: output.toString().trim() };
+      return {
+        success: true,
+        result: { output: output.toString().trim() },
+        executionTime: executionTimeMs,
+      };
     }
   } catch (error) {
     throw new Error(`Execution failed: ${error.message}`);
@@ -92,27 +127,43 @@ console.log(JSON.stringify(result));
 // Main executor function
 async function executeFunction(func, input) {
   const startTime = Date.now();
+  const metrics = {
+    virtualization: func.virtualization,
+  };
 
   try {
-    // Execute the function using Docker
-    const result = await executeInDocker(func, input);
+    let result;
+    if (func.virtualization === 'docker') {
+      result = await executeInDocker(func, input);
+    } else {
+      result = await firecracker.executeFunction(func, input);
+    }
 
-    const endTime = Date.now();
-    const executionTime = endTime - startTime;
+    metrics.executionTime = Date.now() - startTime;
+    metrics.success = true;
+    metrics.memoryUsage = result.memoryUsage;
+    metrics.cpuUsage = result.cpuUsage;
+
+    // Record metrics
+    await MetricsCollector.recordExecution(func._id, metrics);
 
     return {
       success: true,
-      result,
-      executionTime,
+      result: result.result,
+      executionTime: metrics.executionTime,
     };
   } catch (error) {
-    const endTime = Date.now();
-    const executionTime = endTime - startTime;
+    metrics.executionTime = Date.now() - startTime;
+    metrics.success = false;
+    metrics.error = error.message;
+
+    // Record metrics
+    await MetricsCollector.recordExecution(func._id, metrics);
 
     return {
       success: false,
       error: error.message,
-      executionTime,
+      executionTime: metrics.executionTime,
     };
   }
 }

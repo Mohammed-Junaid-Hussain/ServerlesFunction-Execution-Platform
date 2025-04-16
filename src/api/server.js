@@ -16,6 +16,7 @@ app.use(express.json());
 // Routes
 app.use('/api/functions', require('./routes/functions'));
 app.use('/api/executions', require('./routes/executions'));
+app.use('/api/metrics', require('./routes/metrics'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
