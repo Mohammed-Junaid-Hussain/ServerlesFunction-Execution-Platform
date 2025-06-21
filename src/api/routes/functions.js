@@ -36,6 +36,26 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Create a hello-world function
+router.post('/hello-world', async (req, res) => {
+  try {
+    const helloWorldFunc = new Function({
+      name: 'hello-world',
+      language: 'python',
+      code: `def main(input_data):
+    name = input_data.get('name', 'World')
+    return {'message': f'Hello, {name}!'}`,
+      timeout: 5000,
+      virtualization: 'docker'
+    });
+    
+    await helloWorldFunc.save();
+    res.status(201).json(helloWorldFunc);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // Update a function
 router.put('/:id', async (req, res) => {
   try {

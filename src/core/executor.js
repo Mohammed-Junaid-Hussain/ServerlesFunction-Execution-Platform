@@ -18,7 +18,7 @@ async function executeInDocker(func, input) {
     Cmd: [],
     WorkingDir: '/app',
     HostConfig: {
-      AutoRemove: true,
+      AutoRemove: false,
       Memory: 128 * 1024 * 1024, // 128MB memory limit
       MemorySwap: -1,
       NetworkMode: 'none', // Disable network access
@@ -28,16 +28,17 @@ async function executeInDocker(func, input) {
   // Prepare the execution code based on the language
   let executableCode;
   if (language === 'python') {
+    // Indent the code by 4 spaces
+    const indentedCode = code.split('\n').map(line => '    ' + line).join('\n');
     executableCode = `
 import json
 import sys
 import resource
 
-def main():
-    input_data = json.loads('''${JSON.stringify(input)}''')
-    
 ${code}
 
+if __name__ == '__main__':
+    input_data = json.loads('''${JSON.stringify(input)}''')
     result = main(input_data)
     usage = resource.getrusage(resource.RUSAGE_SELF)
     print(json.dumps({
@@ -48,6 +49,7 @@ ${code}
         }
     }))
 `;
+    console.log('Executing Python code:', executableCode);
     containerConfig.Cmd = ['python', '-c', executableCode];
   } else {
     executableCode = `
@@ -91,9 +93,20 @@ console.log(JSON.stringify({
       }, (err, stream) => {
         if (err) return reject(err);
 
-        let output = '';
-        stream.on('data', chunk => output += chunk);
-        stream.on('end', () => resolve(output));
+        let output = Buffer.from([]);
+        stream.on('data', chunk => {
+          // Docker adds 8 bytes of header to each chunk
+          // First 4 bytes are the stream type (stdout/stderr)
+          // Next 4 bytes are the length
+          // The rest is the actual data
+          if (chunk.length > 8) {
+            output = Buffer.concat([output, chunk.slice(8)]);
+          }
+        });
+        stream.on('end', () => {
+          console.log('Final output:', output.toString());
+          resolve(output);
+        });
         stream.on('error', reject);
       });
     });
@@ -104,15 +117,19 @@ console.log(JSON.stringify({
     const executionTimeMs = (executionTime[0] * 1e9 + executionTime[1]) / 1e6;
 
     try {
-      const { result, metrics } = JSON.parse(output.toString().trim());
+      const outputStr = output.toString().trim();
+      console.log('Parsing output:', outputStr);
+      const parsed = JSON.parse(outputStr);
+      console.log('Parsed output:', parsed);
       return {
         success: true,
-        result,
+        result: parsed.result,
         executionTime: executionTimeMs,
-        memoryUsage: metrics.memory,
-        cpuUsage: metrics.cpu,
+        memoryUsage: parsed.metrics.memory,
+        cpuUsage: parsed.metrics.cpu,
       };
     } catch (error) {
+      console.error('Error parsing output:', error);
       return {
         success: true,
         result: { output: output.toString().trim() },
