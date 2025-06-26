@@ -34,7 +34,7 @@ const mongooseOptions = {
 
 // MongoDB connection string
 const MONGODB_URI =
-  "mongodb+srv://junaidhussain798:junaid@cluster0.aa7raiu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+  "mongodb+srv://YOUR-CLUSTER-URL";
 
 // Start server
 const start = async () => {
